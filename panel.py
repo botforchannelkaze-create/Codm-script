@@ -126,45 +126,28 @@ def token():
 # ======================
 @app.route("/getkey")
 def getkey():
-
     token_id = request.args.get("token")
     source = request.args.get("src", "site")
-    duration = request.args.get("duration", "5m")
+    duration = request.args.get("duration", "12h")  # default 12 hours for site
+    
+    if not token_id or token_id not in db["tokens"]:
+        return jsonify({"status":"error","message":"invalid token"}),403
 
     now = time.time()
-
-    # ❗ STRICT TOKEN CHECK
-    if not token_id:
-        return jsonify({
-            "status": "error",
-            "message": "Missing token"
-        }), 403
-
-    if token_id not in db["tokens"]:
-        return jsonify({
-            "status": "error",
-            "message": "Token expired. Please generate again."
-        }), 403
-
     token_data = db["tokens"][token_id]
-    ip = token_data["ip"]
 
-    # 🔒 Anti spam check
-    if ip in db["ip_limit"]:
-        wait = int(KEY_LIMIT - (now - db["ip_limit"][ip]))
-        if wait > 0:
-            return jsonify({
-                "status": "wait",
-                "message": f"Please wait {wait}s before generating again"
-            }), 403
+    if now - token_data["time"] > TOKEN_EXPIRY:
+        del db["tokens"][token_id]
+        save_db()
+        return jsonify({"status":"error","message":"token expired"}),403
 
-    # 🔑 KEY PREFIX
-    prefix = "Kaze-" if source == "bot" else "KazeFreeKey-"
+    # 🔑 KEY PREFIX SYSTEM
+    if source == "bot":
+        prefix = "Kaze-"
+    else:
+        prefix = "KazeFreeKey-"
 
-    key = prefix + ''.join(
-        random.choices(string.ascii_letters + string.digits, k=12)
-    )
-
+    key = prefix + ''.join(random.choices(string.ascii_letters + string.digits, k=12))
     expiry_seconds = convert_duration(duration)
 
     db["keys"][key] = {
@@ -174,17 +157,16 @@ def getkey():
         "login_time": None
     }
 
-    # set IP cooldown
-    db["ip_limit"][ip] = now
+    # Lock IP para sa site lang
+    if source != "bot":
+        db["ip_limit"][token_data["ip"]] = now
 
-    # remove used token
     del db["tokens"][token_id]
-
     save_db()
 
     return jsonify({
-        "status": "success",
-        "key": key,
+        "status":"success",
+        "key":key,
         "expires_in": expiry_seconds
     })
 
@@ -210,11 +192,11 @@ def verify():
         data["login_time"] = time.time()
         save_db()
         remaining = int(data["expiry"] - time.time())
-        send_telegram_alert(f"✓ *Key Used*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
+        send_telegram_alert(f"✓ *Key Used Codm Script*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
         return "valid"
     if data["device"] == device:
         remaining = int(data["expiry"] - time.time())
-        send_telegram_alert(f"✓ *Key Used*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
+        send_telegram_alert(f"✓ *Key Used Codm Script*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
         return "valid"
     send_telegram_alert(f"🔒 *Key Locked - Device Mismatch*\nKey: `{key}`\nDevice Attempt: `{device}`\nAssigned Device: `{data['device']}`")
     return "locked"
