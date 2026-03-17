@@ -14,7 +14,7 @@ CORS(app)
 # ======================
 # CONSTANTS
 # ======================
-TOKEN_EXPIRY = 60       # seconds for token expiry
+TOKEN_EXPIRY = 10       # seconds for token expiry
 COOLDOWN = 120           # anti-spam cooldown
 KEY_LIMIT = 120         # seconds before same IP can generate another key
 DATA_FILE = "database.json"
@@ -129,7 +129,7 @@ def getkey():
 
     token_id = request.args.get("token")
     source = request.args.get("src", "site")
-    duration = request.args.get("duration", "1m")
+    duration = request.args.get("duration", "5m")
 
     now = time.time()
 
