@@ -14,7 +14,7 @@ CORS(app)
 # ======================
 # CONSTANTS
 # ======================
-TOKEN_EXPIRY = 60      # seconds for token expiry
+TOKEN_EXPIRY = 20      # seconds for token expiry
 COOLDOWN = 120           # anti-spam cooldown
 KEY_LIMIT = 120         # seconds before same IP can generate another key
 DATA_FILE = "database.json"
@@ -99,54 +99,72 @@ def token():
     cleanup()
     ip = request.remote_addr
     now = time.time()
-    
-    # Para sa bot, walang cooldown
     source = request.args.get("src", "site")
-    
+
+    # CHECK COOLDOWN ONLY IF IP ALREADY HAS ONE
     if source != "bot":
-        if ip in db["cooldowns"] and now - db["cooldowns"][ip] < COOLDOWN:
-            wait = int(COOLDOWN - (now - db["cooldowns"][ip]))
-            return f"Cooldown active wait {wait}s", 429
-        if ip in db["ip_limit"]:
-            wait = int(KEY_LIMIT - (now - db["ip_limit"][ip]))
-            return f"Wait {wait}s before getting new key", 403
-    
+        if ip in db["cooldowns"]:
+            elapsed = now - db["cooldowns"][ip]
+            if elapsed < COOLDOWN:
+                return jsonify({
+                    "status":"cooldown",
+                    "redirect":"https://kazehayamodz-main-page.onrender.com"
+                })
+
+    # GENERATE TOKEN
     token_id = str(uuid.uuid4())
     db["tokens"][token_id] = {"ip": ip, "time": now}
-    
-    if source != "bot":
-        db["cooldowns"][ip] = now  # cooldown para sa site lang
 
     save_db()
-    return token_id
+    return jsonify({
+        "status":"success",
+        "token": token_id
+    })
 
 # ======================
 # GENERATE KEY
 # ======================
 @app.route("/getkey")
 def getkey():
+
     token_id = request.args.get("token")
     source = request.args.get("src", "site")
-    duration = request.args.get("duration", "12h")  # default 12 hours for site
-    
-    if not token_id or token_id not in db["tokens"]:
-        return jsonify({"status":"error","message":"invalid token"}),403
+    duration = request.args.get("duration", "12h")
 
     now = time.time()
+
+    # ❗ STRICT TOKEN CHECK
+    if not token_id:
+        return jsonify({
+            "status": "error",
+            "message": "Missing token"
+        }), 403
+
+    if token_id not in db["tokens"]:
+        return jsonify({
+            "status": "error",
+            "message": "Token expired. Please generate again."
+        }), 403
+
     token_data = db["tokens"][token_id]
+    ip = token_data["ip"]
 
-    if now - token_data["time"] > TOKEN_EXPIRY:
-        del db["tokens"][token_id]
-        save_db()
-        return jsonify({"status":"error","message":"token expired"}),403
+    # 🔒 Anti spam check
+    if ip in db["ip_limit"]:
+        wait = int(KEY_LIMIT - (now - db["ip_limit"][ip]))
+        if wait > 0:
+            return jsonify({
+                "status": "wait",
+                "message": f"Please wait {wait}s before generating again"
+            }), 403
 
-    # 🔑 KEY PREFIX SYSTEM
-    if source == "bot":
-        prefix = "Kaze-"
-    else:
-        prefix = "KazeFreeKey-"
+    # 🔑 KEY PREFIX
+    prefix = "Kaze-" if source == "bot" else "KazeFreeKey-"
 
-    key = prefix + ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+    key = prefix + ''.join(
+        random.choices(string.ascii_letters + string.digits, k=12)
+    )
+
     expiry_seconds = convert_duration(duration)
 
     db["keys"][key] = {
@@ -156,16 +174,17 @@ def getkey():
         "login_time": None
     }
 
-    # Lock IP para sa site lang
-    if source != "bot":
-        db["ip_limit"][token_data["ip"]] = now
+    # set IP cooldown
+    db["ip_limit"][ip] = now
 
+    # remove used token
     del db["tokens"][token_id]
+
     save_db()
 
     return jsonify({
-        "status":"success",
-        "key":key,
+        "status": "success",
+        "key": key,
         "expires_in": expiry_seconds
     })
 
@@ -191,11 +210,11 @@ def verify():
         data["login_time"] = time.time()
         save_db()
         remaining = int(data["expiry"] - time.time())
-        send_telegram_alert(f"✓ *Key Used Codm Script*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
+        send_telegram_alert(f"✓ *Key Used*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
         return "valid"
     if data["device"] == device:
         remaining = int(data["expiry"] - time.time())
-        send_telegram_alert(f"✓ *Key Used Codm Script*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
+        send_telegram_alert(f"✓ *Key Used*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
         return "valid"
     send_telegram_alert(f"🔒 *Key Locked - Device Mismatch*\nKey: `{key}`\nDevice Attempt: `{device}`\nAssigned Device: `{data['device']}`")
     return "locked"
@@ -253,3 +272,4 @@ def stats():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+    
