@@ -6,7 +6,7 @@ import json
 import os
 import random
 import string
-import requests  # optional: telegram alerts
+import requests  # telegram alerts
 
 app = Flask(__name__)
 CORS(app)
@@ -14,16 +14,16 @@ CORS(app)
 # ======================
 # CONSTANTS
 # ======================
-TOKEN_EXPIRY = 300       # seconds for token expiry
-COOLDOWN = 120         # anti-spam cooldown
+TOKEN_EXPIRY = 5       # seconds for token expiry
+COOLDOWN = 120           # anti-spam cooldown
 KEY_LIMIT = 120         # seconds before same IP can generate another key
 DATA_FILE = "database.json"
 
-TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")       # optional
-OWNER_ID = os.getenv("OWNER_ID")                  # optional
+TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = os.getenv("OWNER_ID")  # int chat_id of owner
 
 # ======================
-# LOAD DATABASE
+# LOAD DB
 # ======================
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
@@ -41,25 +41,19 @@ def save_db():
         json.dump(db, f, indent=4)
 
 # ======================
-# CLEANUP EXPIRED TOKENS & KEYS
+# CLEANUP
 # ======================
 def cleanup():
     now = time.time()
-    # tokens
     for t in list(db["tokens"].keys()):
         if now - db["tokens"][t]["time"] > TOKEN_EXPIRY:
             del db["tokens"][t]
-    # ip cooldowns
     for ip in list(db["ip_limit"].keys()):
         if now - db["ip_limit"][ip] > KEY_LIMIT:
             del db["ip_limit"][ip]
-    # expired keys
-    for k in list(db["keys"].keys()):
-        if now > db["keys"][k]["expiry"]:
-            del db["keys"][k]
 
 # ======================
-# TELEGRAM ALERT FUNCTION
+# TELEGRAM ALERT
 # ======================
 def send_telegram_alert(message: str):
     if not TELEGRAM_BOT_TOKEN or not OWNER_ID:
@@ -76,7 +70,7 @@ def send_telegram_alert(message: str):
         pass
 
 # ======================
-# DURATION HELPER
+# DURATION CONVERTER
 # ======================
 def convert_duration(duration: str):
     duration = duration.lower()
@@ -88,17 +82,17 @@ def convert_duration(duration: str):
         return int(duration[:-1]) * 86400
     if duration == "lifetime":
         return 999999999
-    return 1800  # default 30 min
+    return 1800  # default 30 minutes
 
 # ======================
 # HOME
 # ======================
 @app.route("/")
 def home():
-    return "KAZE SCRIPT PANEL ONLINE 🚀"
+    return "KAZE SERVER ONLINE 🚀"
 
 # ======================
-# TOKEN GENERATOR
+# TOKEN
 # ======================
 @app.route("/token")
 def token():
@@ -107,41 +101,69 @@ def token():
     now = time.time()
     source = request.args.get("src", "site")
 
-    if source != "bot" and ip in db["cooldowns"]:
-        elapsed = now - db["cooldowns"][ip]
-        if elapsed < COOLDOWN:
-            return jsonify({"status": "cooldown", "wait": int(COOLDOWN - elapsed)}), 403
+    # CHECK COOLDOWN ONLY IF IP ALREADY HAS ONE
+    if source != "bot":
+        if ip in db["cooldowns"]:
+            elapsed = now - db["cooldowns"][ip]
+            if elapsed < COOLDOWN:
+                return jsonify({
+                    "status":"cooldown",
+                    "redirect":"https://kazehayamodz-main-page.onrender.com"
+                })
 
+    # GENERATE TOKEN
     token_id = str(uuid.uuid4())
     db["tokens"][token_id] = {"ip": ip, "time": now}
-    db["cooldowns"][ip] = now
-    save_db()
 
-    return jsonify({"status": "success", "token": token_id})
+    save_db()
+    return jsonify({
+        "status":"success",
+        "token": token_id
+    })
 
 # ======================
-# KEY GENERATOR
+# GENERATE KEY
 # ======================
 @app.route("/getkey")
 def getkey():
-    cleanup()
+
     token_id = request.args.get("token")
     source = request.args.get("src", "site")
     duration = request.args.get("duration", "12h")
+
     now = time.time()
 
-    if not token_id or token_id not in db["tokens"]:
-        return jsonify({"status": "error", "message": "Invalid or expired token"}), 403
+    # ❗ STRICT TOKEN CHECK
+    if not token_id:
+        return jsonify({
+            "status": "error",
+            "message": "Missing token"
+        }), 403
 
-    ip = db["tokens"][token_id]["ip"]
+    if token_id not in db["tokens"]:
+        return jsonify({
+            "status": "error",
+            "message": "Token expired. Please generate again."
+        }), 403
 
+    token_data = db["tokens"][token_id]
+    ip = token_data["ip"]
+
+    # 🔒 Anti spam check
     if ip in db["ip_limit"]:
         wait = int(KEY_LIMIT - (now - db["ip_limit"][ip]))
         if wait > 0:
-            return jsonify({"status": "wait", "message": f"Wait {wait}s"}), 403
+            return jsonify({
+                "status": "wait",
+                "message": f"Please wait {wait}s before generating again"
+            }), 403
 
-    prefix = "KazeScript-" if source == "bot" else "KazeFreeKey-"
-    key = prefix + ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+    # 🔑 KEY PREFIX
+    prefix = "Kaze-" if source == "bot" else "KazeFreeKey-"
+
+    key = prefix + ''.join(
+        random.choices(string.ascii_letters + string.digits, k=12)
+    )
 
     expiry_seconds = convert_duration(duration)
 
@@ -152,11 +174,19 @@ def getkey():
         "login_time": None
     }
 
+    # set IP cooldown
     db["ip_limit"][ip] = now
+
+    # remove used token
     del db["tokens"][token_id]
+
     save_db()
 
-    return jsonify({"status": "success", "key": key, "expires_in": expiry_seconds})
+    return jsonify({
+        "status": "success",
+        "key": key,
+        "expires_in": expiry_seconds
+    })
 
 # ======================
 # VERIFY KEY
@@ -168,31 +198,25 @@ def verify():
     device = request.args.get("device")
     if not key or key not in db["keys"]:
         return "invalid"
-
     data = db["keys"][key]
-
     if data.get("revoked"):
-        send_telegram_alert(f"🚫 Key Revoked\nKey: {key}\nDevice: {device}")
+        send_telegram_alert(f"🚫 *Key Revoked*\nKey: `{key}`\nDevice: `{device}`")
         return "revoked"
-
     if time.time() > data["expiry"]:
-        send_telegram_alert(f"⚠️ Key Expired\nKey: {key}\nDevice: {device}")
+        send_telegram_alert(f"⚠️ *Key Expired*\nKey: `{key}`\nDevice: `{device}`")
         return "expired"
-
     if data["device"] is None:
         data["device"] = device
         data["login_time"] = time.time()
         save_db()
         remaining = int(data["expiry"] - time.time())
-        send_telegram_alert(f"✓ Key Used\nKey: {key}\nDevice: {device}\nExpires in {remaining}s")
+        send_telegram_alert(f"✓ *Key Used*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
         return "valid"
-
     if data["device"] == device:
         remaining = int(data["expiry"] - time.time())
-        send_telegram_alert(f"✓ Key Used\nKey: {key}\nDevice: {device}\nExpires in {remaining}s")
+        send_telegram_alert(f"✓ *Key Used*\nKey: `{key}`\nDevice: `{device}`\nExpires in: `{remaining}s`")
         return "valid"
-
-    send_telegram_alert(f"🔒 Device Mismatch\nKey: {key}\nAttempt Device: {device}\nAssigned: {data['device']}")
+    send_telegram_alert(f"🔒 *Key Locked - Device Mismatch*\nKey: `{key}`\nDevice Attempt: `{device}`\nAssigned Device: `{data['device']}`")
     return "locked"
 
 # ======================
@@ -205,20 +229,26 @@ def revoke():
         return jsonify({"status": "error", "message": "Key not found"}), 404
     db["keys"][key]["revoked"] = True
     save_db()
-    send_telegram_alert(f"🚫 Key Revoked\nKey: {key}")
+    send_telegram_alert(f"🚫 *Key Revoked*\nKey: `{key}`")
     return jsonify({"status": "success", "message": f"{key} revoked"})
 
 # ======================
-# LIST KEYS
+# LIST ACTIVE KEYS
 # ======================
 @app.route("/list")
 def list_keys():
     cleanup()
     result = []
     for key, data in db["keys"].items():
-        if data.get("revoked") or time.time() > data["expiry"]:
+        if data.get("revoked"):
             continue
-        result.append({"key": key, "device": data["device"], "expire_in": int(data["expiry"] - time.time())})
+        if time.time() > data["expiry"]:
+            continue
+        result.append({
+            "key": key,
+            "device": data["device"],
+            "expire_in": int(data["expiry"] - time.time())
+        })
     return jsonify(result)
 
 # ======================
@@ -230,7 +260,11 @@ def stats():
     total = len(db["keys"])
     active = len([k for k in db["keys"] if not db["keys"][k].get("revoked") and time.time() < db["keys"][k]["expiry"]])
     expired = total - active
-    return jsonify({"total_keys": total, "active_keys": active, "expired_keys": expired})
+    return jsonify({
+        "total_keys": total,
+        "active_keys": active,
+        "expired_keys": expired
+    })
 
 # ======================
 # RUN SERVER
