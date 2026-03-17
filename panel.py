@@ -126,14 +126,15 @@ def token():
 # ======================
 @app.route("/getkey")
 def getkey():
-
     token_id = request.args.get("token")
     source = request.args.get("src", "site")
     duration = request.args.get("duration", "12h")
 
     now = time.time()
 
-    # ❗ STRICT TOKEN CHECK
+    # ======================
+    # TOKEN CHECK
+    # ======================
     if not token_id:
         return jsonify({
             "status": "error",
@@ -149,7 +150,9 @@ def getkey():
     token_data = db["tokens"][token_id]
     ip = token_data["ip"]
 
-    # 🔒 Anti spam check
+    # ======================
+    # ANTI SPAM
+    # ======================
     if ip in db["ip_limit"]:
         wait = int(KEY_LIMIT - (now - db["ip_limit"][ip]))
         if wait > 0:
@@ -158,9 +161,17 @@ def getkey():
                 "message": f"Please wait {wait}s before generating again"
             }), 403
 
-    # 🔑 KEY PREFIX
-    prefix = "Kaze-" if source == "bot" else "KazeFreeKey-"
+    # ======================
+    # FIXED PREFIX LOGIC
+    # ======================
+    if source in ["manual", "bot"]:
+        prefix = "Kaze-"
+    else:
+        prefix = "KazeFreeKey-"
 
+    # ======================
+    # GENERATE KEY
+    # ======================
     key = prefix + ''.join(
         random.choices(string.ascii_letters + string.digits, k=12)
     )
@@ -174,14 +185,17 @@ def getkey():
         "login_time": None
     }
 
-    # set IP cooldown
+    # ======================
+    # SAVE LIMIT + DELETE TOKEN
+    # ======================
     db["ip_limit"][ip] = now
-
-    # remove used token
     del db["tokens"][token_id]
 
     save_db()
 
+    # ======================
+    # RESPONSE
+    # ======================
     return jsonify({
         "status": "success",
         "key": key,
