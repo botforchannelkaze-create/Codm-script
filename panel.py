@@ -99,27 +99,26 @@ def token():
     cleanup()
     ip = request.remote_addr
     now = time.time()
+    
+    # Para sa bot, walang cooldown
     source = request.args.get("src", "site")
-
-    # CHECK COOLDOWN ONLY IF IP ALREADY HAS ONE
+    
     if source != "bot":
-        if ip in db["cooldowns"]:
-            elapsed = now - db["cooldowns"][ip]
-            if elapsed < COOLDOWN:
-                return jsonify({
-                    "status":"cooldown",
-                    "redirect":"https://kazehayamodz-main-page.onrender.com"
-                })
-
-    # GENERATE TOKEN
+        if ip in db["cooldowns"] and now - db["cooldowns"][ip] < COOLDOWN:
+            wait = int(COOLDOWN - (now - db["cooldowns"][ip]))
+            return f"Cooldown active wait {wait}s", 429
+        if ip in db["ip_limit"]:
+            wait = int(KEY_LIMIT - (now - db["ip_limit"][ip]))
+            return f"Wait {wait}s before getting new key", 403
+    
     token_id = str(uuid.uuid4())
     db["tokens"][token_id] = {"ip": ip, "time": now}
+    
+    if source != "bot":
+        db["cooldowns"][ip] = now  # cooldown para sa site lang
 
     save_db()
-    return jsonify({
-        "status":"success",
-        "token": token_id
-    })
+    return token_id
 
 # ======================
 # GENERATE KEY
